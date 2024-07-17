@@ -13,6 +13,7 @@ import open3d as o3d
 from cv_bridge import CvBridge
 import open3d as o3d
 import time
+import copy
 
 from vlmaps.utils.lseg_utils import get_lseg_feat
 from vlmaps.utils.mapping_utils import (
@@ -69,7 +70,7 @@ def quaternion_matrix(quaternion):  #Copied from https://github.com/ros/geometry
         (                0.0,                 0.0,                 0.0, 1.0)
         ), dtype=np.float64)
 
-class FeturedPoint:
+class FeaturedPoint:
     def __init__(self, point, embedding, rgb) -> None:
         self.point_xyz = point
         self.embedding = embedding
@@ -96,6 +97,7 @@ class VLMapBuilderROS(Node):
         map_config: DictConfig
     ):
         super().__init__('VLMap_builder_node')
+
         self.map_config = map_config
 
         # tf buffer init
@@ -115,7 +117,7 @@ class VLMapBuilderROS(Node):
         self.gs = self.map_config.grid_size
         self.depth_sample_rate = self.map_config.depth_sample_rate
 
-        self.map_save_dir = "/home/ergocub"
+        self.map_save_dir = map_config.savepath
         os.makedirs(self.map_save_dir, exist_ok=True)
         self.map_save_path = self.map_save_dir + "/" + "vlmaps.h5df"
 
@@ -154,9 +156,15 @@ class VLMapBuilderROS(Node):
     def project_pc(self, rgb, points, depth_factor=1.):
         k = np.eye(3)
         # Ergocub intrinsics: Realsense D455
-        intrinsics = {'fx': 612.7910766601562, 'fy': 611.8779296875, 'ppx': 321.7364196777344,
-                      'ppy': 245.0658416748047,
+        # intrinsics = {'fx': 612.7910766601562, 'fy': 611.8779296875, 'ppx': 321.7364196777344,
+        #               'ppy': 245.0658416748047,
+        #               'width': 640, 'height': 480}
+
+        # R1 intrinsics: Realsense D455
+        intrinsics = {'fx': 386.08139038, 'fy': 386.08139038, 'ppx': 321.87374878,
+                      'ppy': 238.11352539,
                       'width': 640, 'height': 480}
+        
         width = intrinsics["width"]
         height = intrinsics["height"]
 
@@ -232,7 +240,7 @@ class VLMapBuilderROS(Node):
                 z = z / depth_factor
                 x = ((v - cx) * z) / fx
                 y = ((u - cy) * z) / fy
-                feature_points_ls[count] = FeturedPoint([x, y, z],features_per_pixels[0, :, u, v], color_img[u, v, :]) # avoid memory re-allocation each loop iter
+                feature_points_ls[count] = FeaturedPoint([x, y, z], copy.deepcopy(features_per_pixels[0, :, u, v]), color_img[u, v, :]) # avoid memory re-allocation each loop iter
                 count += 1
         feature_points_ls.resize(count, refcheck=False)
         return FeaturedPC(feature_points_ls)
@@ -250,7 +258,8 @@ class VLMapBuilderROS(Node):
             transform = self.tf_buffer.lookup_transform(
                     target_frame,
                     source_frame,
-                    depth_msg.header.stamp
+                    rclpy.time.Time.from_msg(depth_msg.header.stamp)
+                    # depth_msg.header.stamp
                     )
         except TransformException as ex:
                 self.get_logger().info(
@@ -337,6 +346,8 @@ class VLMapBuilderROS(Node):
 
             #feat = pix_feats[0, :, py, px]
             feat = feature
+
+            self.occupied_ids[row, col, height] = -1
             occupied_id = self.occupied_ids[row, col, height]
 
             if occupied_id == -1:
@@ -360,7 +371,7 @@ class VLMapBuilderROS(Node):
         end_loop_time = time.time() - loop_timer
         self.get_logger().info(f"CALLBACK TIME: {end_loop_time}")
         # Save map each X callbacks TODO prameterize and do it in a separate thread
-        if self.frame_i % 10 == 0:
+        if self.frame_i % 5 == 0:
             self.get_logger().info(f"Temporarily saving {self.max_id} features at iter {self.frame_i}...")
             self._save_3d_map(self.grid_feat, self.grid_pos, self.weight, self.grid_rgb, self.occupied_ids, self.mapped_iter_set, self.max_id)
         self.frame_i += 1   # increase counter for map saving purposes
@@ -561,4 +572,5 @@ class VLMapBuilderROS(Node):
         grid_pos = grid_pos[:max_id]
         weight = weight[:max_id]
         grid_rgb = grid_rgb[:max_id]
-        save_3d_map(self.map_save_path, grid_feat, grid_pos, weight, occupied_ids, list(mapped_iter_set), grid_rgb)
+        # save_3d_map(self.map_save_path, grid_feat, grid_pos, weight, occupied_ids, list(mapped_iter_set), grid_rgb)
+        save_3d_map(self.map_save_path.split('.h5df')[0] + f"{self.frame_i}.h5df", grid_feat, grid_pos, weight, occupied_ids, list(mapped_iter_set), grid_rgb)
