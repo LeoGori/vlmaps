@@ -157,7 +157,7 @@ class VLMapPublisher(Node):
 )
 def main(config, args=None):
     rclpy.init(args=args)
-    map_dir = "/home/ergocub"
+    map_dir = config.savepath
     map_name="vlmaps"
     ros_node = VLMapPublisher("vlmaps_srv_node" ,config, vlmap_dir=map_dir, vlmap_name=map_name)
     rclpy.spin(ros_node)

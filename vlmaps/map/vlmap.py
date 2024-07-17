@@ -93,9 +93,9 @@ class VLMap(Map):
     #    elif self.map_config.pose_info.pose_type == "camera":
     #        self.map_builder.create_camera_map()
 
-    def load_map(self, data_dir: str) -> bool:
+    def load_map(self, data_dir: str, filename) -> bool:
         self._setup_paths(data_dir)
-        self.map_save_path = Path(data_dir) / "vlmaps.h5df"
+        self.map_save_path = Path(data_dir) / filename
         print(self.map_save_path)
         if not self.map_save_path.exists():
             print("Loading VLMap failed because the file doesn't exist.")
