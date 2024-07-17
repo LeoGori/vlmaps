@@ -32,3 +32,5 @@ obstacle_names:
   - "stairs"
   - "other"
 categories: "mp3d" # "mp3d", "ai2thor"
+savepath: "output/vlmap"
+development_mode: True
