@@ -5,13 +5,32 @@ from tqdm import tqdm
 from scipy.ndimage import distance_transform_edt
 
 
-def visualize_rgb_map_3d(pc: np.ndarray, rgb: np.ndarray):
+def visualize_rgb_map_3d(pc: np.ndarray, rgb: np.ndarray, voxel_size: float = 0.01, point_size = 10) -> None:
     grid_rgb = rgb / 255.0
 
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(pc)
     pcd.colors = o3d.utility.Vector3dVector(grid_rgb)
-    o3d.visualization.draw_geometries([pcd])
+
+    # Perform voxel downsampling
+    downpcd = pcd.voxel_down_sample(voxel_size=voxel_size)
+
+    # Visualize the downsampled point cloud
+    # o3d.visualization.draw_geometries([downpcd])
+
+    # Visualize the downsampled point cloud with adjusted point size
+    vis = o3d.visualization.Visualizer()
+    vis.create_window()
+    vis.add_geometry(downpcd)
+    
+    # Adjust the point size
+    render_option = vis.get_render_option()
+    render_option.point_size = point_size
+    
+    vis.run()
+    vis.destroy_window()
+
+    # o3d.visualization.draw_geometries([pcd])
     #vis = o3d.visualization.Visualizer()
     #vis.create_window()
     #vis.add_geometry(pcd)
