@@ -1,5 +1,7 @@
 import os
-import openai
+# import openai
+from groq import Groq
+
 
 
 def parse_object_goal_instruction_deprecated(language_instr):
@@ -8,7 +10,7 @@ def parse_object_goal_instruction_deprecated(language_instr):
     Parse language instruction into a series of landmarks
     Example: "first go to the kitchen and then go to the toilet" -> ["kitchen", "toilet"]
     """
-    import openai
+    # import openai
 
     openai_key = os.environ["OPENAI_KEY"]
     openai.api_key = openai_key
@@ -38,13 +40,16 @@ def parse_object_goal_instruction(language_instr):
     Parse language instruction into a series of landmarks
     Example: "first go to the kitchen and then go to the toilet" -> ["kitchen", "toilet"]
     """
-    import openai
+    # import openai
 
-    openai_key = os.environ["OPENAI_KEY"]
-    openai.api_key = openai_key
-    client = openai.OpenAI(api_key=openai_key)
+    # openai_key = os.environ["OPENAI_KEY"]
+    # openai.api_key = openai_key
+    # client = openai.OpenAI(api_key=openai_key)
+    client = Groq(
+        api_key=os.environ.get("GROQ_API_KEY"),
+    )
+
     response = client.chat.completions.create(
-        model="gpt-4-turbo",
         messages=[
             {
                 "role": "user",
@@ -115,6 +120,7 @@ def parse_object_goal_instruction(language_instr):
                 "content": language_instr
             }
         ],
+        model="llama3-8b-8192",
         max_tokens=300,
     )
 

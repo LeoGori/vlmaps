@@ -29,6 +29,13 @@ from vlmaps.utils.mapping_utils import (
 )
 from vlmaps.lseg.modules.models.lseg_net import LSegEncNet
 
+import sys
+import os
+
+# Add the directory containing the gsam folder to the Python path
+sys.path.append(os.path.abspath('/home/user1/VLMaps/vlmaps'))
+from gsam.GSAM import GSAM
+
 #ROS2 stuff
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
@@ -122,7 +129,11 @@ class VLMapBuilderROS(Node):
         self.map_save_path = self.map_save_dir + "/" + "vlmaps.h5df"
 
         # init lseg model
-        self.lseg_model, self.lseg_transform, self.crop_size, self.base_size, self.norm_mean, self.norm_std = self._init_lseg()
+        if self.map_config.model == "lseg":
+            self.seg_model, self.seg_transform, self.crop_size, self.base_size, self.norm_mean, self.norm_std = self._init_lseg()
+        elif self.map_config.model == "gsam":
+            self.gsam = GSAM(device="cuda" if torch.cuda.is_available() else "cpu")
+            self.seg_model, self.seg_transform, self.crop_size, self.base_size, self.norm_mean, self.norm_std = self.gsam._init_gsam()
 
         # init the map
         (
@@ -152,6 +163,7 @@ class VLMapBuilderROS(Node):
         self.principal_point_y = self.calib_mat[1,2]    #cy or ppy
 
         #pbar = tqdm(zip(self.rgb_paths, self.depth_paths, self.base_poses), total=len(self.rgb_paths))
+
     
     def project_pc(self, rgb, points, depth_factor=1.):
         k = np.eye(3)
@@ -284,11 +296,18 @@ class VLMapBuilderROS(Node):
         #### Segment image and extract features
         # get pixel-aligned LSeg features
         start = time.time()
-        pix_feats = get_lseg_feat(
-            self.lseg_model, rgb, ["other", "screen", "table", "closet", "chair", "shelf", "door", "wall", "ceiling", "floor", "human"], self.lseg_transform, self.device, self.crop_size, self.base_size, self.norm_mean, self.norm_std, vis=False
-        )
+
+        text_labels = ["other", "screen", "table", "closet", "chair", "shelf", "door", "wall", "ceiling", "floor", "human"]
+
+        if self.map_config.model == "lseg":
+            pix_feats = get_lseg_feat(
+                self.seg_model, rgb, text_labels, self.seg_transform, self.device, self.crop_size, self.base_size, self.norm_mean, self.norm_std, vis=False
+            )
+        elif self.map_config.model == "gsam":
+            boxes, scores, phrases, text_embeddings = self.gsam.groundingdino_model.predict_captions(rgb, text_labels)
+            pix_feats = self.gsam.get_sam_feat(rgb, text_embeddings)
         time_diff = time.time() - start
-        self.get_logger().info(f"lseg features extracted in: {time_diff}")
+        self.get_logger().info(f"seg features extracted in: {time_diff}")
 
         #pc = self.from_depth_to_pc(depth, depth_factor=1.)
         #self.get_logger().info('backprojected depth')
@@ -445,6 +464,8 @@ class VLMapBuilderROS(Node):
         """
         # init the map related variables
         vh = int(camera_height / cs)
+        if self.map_config.model == "gsam":
+            self.clip_feat_dim = 4
         grid_feat = np.zeros((gs * gs, self.clip_feat_dim), dtype=np.float32)
         grid_pos = np.zeros((gs * gs, 3), dtype=np.int32)
         occupied_ids = -1 * np.ones((gs, gs, vh), dtype=np.int32)

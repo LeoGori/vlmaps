@@ -6,8 +6,8 @@ from scipy.spatial.transform import Rotation as R
 import cv2
 import habitat_sim
 import numpy as np
-from PIL import Image
-
+from PIL import Image 
+import magnum
 
 def make_cfg(settings: Dict) -> habitat_sim.Configuration:
     sim_cfg = habitat_sim.SimulatorConfiguration()
@@ -22,7 +22,7 @@ def make_cfg(settings: Dict) -> habitat_sim.Configuration:
         settings["height"],
         settings["width"],
         [0.0, settings["sensor_height"], 1.3],
-        orientation=[-np.pi / 8, 0, 0],
+        orientation=magnum.Vector3([-np.pi / 8, 0, 0]),
     )
     sensor_spec.append(back_rgb_sensor_spec)
 
