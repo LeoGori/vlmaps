@@ -139,6 +139,7 @@ def resize_image(img, h, w, **up_kwargs):
 
 
 def pad_image(img, mean, std, crop_size):
+    print(img.shape)
     b, c, h, w = img.shape  # .size()
     assert c == 3
     padh = crop_size - h if h < crop_size else 0
