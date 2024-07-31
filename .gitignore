@@ -20,4 +20,6 @@ ros2_vlmaps_interfaces/build
 ros2_vlmaps_interfaces/install
 ros2_vlmaps_interfaces/log
 application/outputs
+application/output
 outputs
+virt_env
