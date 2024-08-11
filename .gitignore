@@ -23,3 +23,13 @@ application/outputs
 application/output
 outputs
 virt_env
+catseg_demo
+catseg/__pycache__
+catseg/output
+catseg/model_base.pth
+catseg/model_large.pth
+catseg/open_clip
+output
+vlmaps.egg-info
+catseg/cat_seg/__pycache__
+build
