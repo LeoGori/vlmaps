@@ -16,7 +16,6 @@ def main(config: DictConfig) -> None:
     # free up GPU memory
     gc.collect()
     torch.cuda.empty_cache()
-    
 
     vlmap = VLMap(config.map_config)
     #data_dir = Path(config.data_paths.vlmaps_data_dir) / "vlmaps_dataset"
