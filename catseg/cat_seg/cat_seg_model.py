@@ -158,36 +158,36 @@ class CATSeg(nn.Module):
 
         outputs = self.sem_seg_head(clip_features, features)
 
-        # Added by Leo, upsample the image features to integrate with vlmaps, check if the approach is effective by comparing the original and downsampled tensors
-        rearranged_image_features = rearrange(image_features, "B (H W) C -> B C H W", H=24)
+        # # Added by Leo, upsample the image features to integrate with vlmaps, check if the approach is effective by comparing the original and downsampled tensors
+        # rearranged_image_features = rearrange(image_features, "B (H W) C -> B C H W", H=24)
 
-        # Upsample to (480, 640, 768) using bilinear interpolation
-        upscaled_image_features = F.interpolate(rearranged_image_features, size=(480, 640), mode='bilinear', align_corners=False)
+        # # Upsample to (480, 640, 768) using bilinear interpolation
+        # upscaled_image_features = F.interpolate(rearranged_image_features, size=(480, 640), mode='bilinear', align_corners=False)
 
-        # Downsample back to (24, 24, 768)
-        downscaled_image_features = F.interpolate(upscaled_image_features, size=(24, 24), mode='bilinear', align_corners=False)
+        # # Downsample back to (24, 24, 768)
+        # downscaled_image_features = F.interpolate(upscaled_image_features, size=(24, 24), mode='bilinear', align_corners=False)
 
-        originally_arranged_downscaled_image_features = rearrange(downscaled_image_features, "B C H W -> B (H W) C")
+        # originally_arranged_downscaled_image_features = rearrange(downscaled_image_features, "B C H W -> B (H W) C")
 
-        # Compare the original and downscaled tensors
-        difference = torch.abs(image_features - originally_arranged_downscaled_image_features)
-        max_difference = torch.max(difference)
-        print(f"Max difference between original and downscaled tensor: {max_difference.item()}")
+        # # Compare the original and downscaled tensors
+        # difference = torch.abs(image_features - originally_arranged_downscaled_image_features)
+        # max_difference = torch.max(difference)
+        # print(f"Max difference between original and downscaled tensor: {max_difference.item()}")
 
-        # CLIP ViT features for guidance
-        downscaled_res3 = rearrange(originally_arranged_downscaled_image_features, "B (H W) C -> B C H W", H=24)
-        downscaled_res4 = rearrange(self.layers[0][1:, :, :], "(H W) B C -> B C H W", H=24)
-        downscaled_res5 = rearrange(self.layers[1][1:, :, :], "(H W) B C -> B C H W", H=24)
-        downscaled_res4 = self.upsample1(downscaled_res4)
-        downscaled_res5 = self.upsample2(downscaled_res5)
-        downscaled_image_features = {'res5': downscaled_res5, 'res4': downscaled_res4, 'res3': downscaled_res3,}
+        # # CLIP ViT features for guidance
+        # downscaled_res3 = rearrange(originally_arranged_downscaled_image_features, "B (H W) C -> B C H W", H=24)
+        # downscaled_res4 = rearrange(self.layers[0][1:, :, :], "(H W) B C -> B C H W", H=24)
+        # downscaled_res5 = rearrange(self.layers[1][1:, :, :], "(H W) B C -> B C H W", H=24)
+        # downscaled_res4 = self.upsample1(downscaled_res4)
+        # downscaled_res5 = self.upsample2(downscaled_res5)
+        # downscaled_image_features = {'res5': downscaled_res5, 'res4': downscaled_res4, 'res3': downscaled_res3,}
 
-        downscaled_outputs = self.sem_seg_head(originally_arranged_downscaled_image_features, downscaled_image_features, omit_first_feats=False)
+        # downscaled_outputs = self.sem_seg_head(originally_arranged_downscaled_image_features, downscaled_image_features, omit_first_feats=False)
 
-        difference = torch.abs(outputs - downscaled_outputs)
-        max_difference = torch.max(difference)
+        # difference = torch.abs(outputs - downscaled_outputs)
+        # max_difference = torch.max(difference)
 
-        print(f"Max difference between original and downscaled outputs: {max_difference.item()}")
+        # print(f"Max difference between original and downscaled outputs: {max_difference.item()}")
 
         if self.training:
             targets = torch.stack([x["sem_seg"].to(self.device) for x in batched_inputs], dim=0)
@@ -213,12 +213,51 @@ class CATSeg(nn.Module):
 
             output = sem_seg_postprocess(outputs[0], image_size, height, width)
 
-            downscaled_outputs = downscaled_outputs.sigmoid()
+            # downscaled_outputs = downscaled_outputs.sigmoid()
 
-            downscaled_outputs = sem_seg_postprocess(downscaled_outputs[0], image_size, height, width)
+            # downscaled_outputs = sem_seg_postprocess(downscaled_outputs[0], image_size, height, width)
 
-            processed_results = [{'sem_seg': output, 'downscaled_sem_seg': downscaled_outputs}]
+            # processed_results = [{'sem_seg': output, 'downscaled_sem_seg': downscaled_outputs}]
+            processed_results = [{'sem_seg': output}]
             return processed_results, image_features
+    
+    def get_image_embeddings(self, batched_inputs):
+        """
+        Args:
+            batched_inputs: a list, batched outputs of :class:`DatasetMapper`.
+                Each item in the list contains the inputs for one image.
+                For now, each item in the list is a dict that contains:
+                   * "image": Tensor, image in (C, H, W) format.
+                   * "instances": per-region ground truth
+                   * Other information that's included in the original dicts, such as:
+                     "height", "width" (int): the output resolution of the model (may be different
+                     from input resolution), used in inference.
+        Returns:
+            list[dict]:
+                each dict has the results for one image. The dict contains the following keys:
+
+                * "sem_seg":
+                    A Tensor that represents the
+                    per-pixel segmentation prediced by the head.
+                    The prediction has shape KxHxW that represents the logits of
+                    each class for each pixel.
+        """
+        
+        images = [x["image"].to(self.device) for x in batched_inputs]
+        if not self.training and self.sliding_window:
+            return self.inference_sliding_window(batched_inputs)
+
+        clip_images = [(x - self.clip_pixel_mean) / self.clip_pixel_std for x in images]
+        clip_images = ImageList.from_tensors(clip_images, self.size_divisibility)
+
+        self.layers = []
+
+        clip_images_resized = F.interpolate(clip_images.tensor, size=self.clip_resolution, mode='bilinear', align_corners=False, )
+        clip_features = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized, dense=True)
+
+        image_features = clip_features[:, 1:, :]
+
+        return image_features
         
 
     def get_masks(self, downsampled_batched_image_feats, labels):

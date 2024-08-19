@@ -1,6 +1,9 @@
 from pathlib import Path
 import hydra
 from omegaconf import DictConfig
+import sys
+import os
+sys.path.append(os.path.abspath('..'))
 from vlmaps.map.vlmap import VLMap
 from vlmaps.utils.matterport3d_categories import mp3dcat
 from vlmaps.utils.visualize_utils import (
@@ -30,7 +33,7 @@ def main(config: DictConfig) -> None:
     vlmap = VLMap(config.map_config, data_dir=data_dirs[config.scene_id])
     #vlmap.load_map(data_dirs[config.scene_id])
     # vlmap.load_map(config.savepath, "vlmaps35.h5df")
-    vlmap.load_map("output/vlmap", "vlmaps50.h5df")
+    vlmap.load_map("output/vlmap", "vlmaps.h5df")
     visualize_rgb_map_3d(vlmap.grid_pos, vlmap.grid_rgb, voxel_size=.001)
     cat = input("What is your interested category in this scene?")
     # cat = "chair"
@@ -40,7 +43,7 @@ def main(config: DictConfig) -> None:
     print(mp3dcat[1:-1])
     if config.init_categories:
         vlmap.init_categories(mp3dcat[1:-1])
-        mask = vlmap.index_map(cat, with_init_cat=True)
+        mask = vlmap.index_map(cat, with_init_cat=False)
     else:
         mask = vlmap.index_map(cat, with_init_cat=False)
 

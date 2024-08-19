@@ -648,7 +648,7 @@ class Aggregator(nn.Module):
     def correlation(self, img_feats, text_feats):
         img_feats = F.normalize(img_feats, dim=1) # B C H W
         text_feats = F.normalize(text_feats, dim=-1) # B T P C
-        print(img_feats.shape, text_feats.shape)
+        # print(img_feats.shape, text_feats.shape)
         corr = torch.einsum('bchw, btpc -> bpthw', img_feats, text_feats)
         return corr
 

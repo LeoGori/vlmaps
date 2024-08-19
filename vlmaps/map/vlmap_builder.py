@@ -15,6 +15,13 @@ import open3d as o3d
 import time
 import copy
 
+# perform interpolation to get the pixel-aligned CATSeg features
+from torch.nn import functional as F
+# perform feature rearrangement of the CATSeg features
+from einops import rearrange
+import gc
+
+
 from vlmaps.utils.lseg_utils import get_lseg_feat
 from vlmaps.utils.mapping_utils import (
     load_3d_map,
@@ -32,9 +39,10 @@ from vlmaps.lseg.modules.models.lseg_net import LSegEncNet
 import sys
 import os
 
+
 # Add the directory containing the gsam folder to the Python path
 sys.path.append(os.path.abspath('/home/user1/VLMaps/vlmaps'))
-from gsam.GSAM import GSAM
+# from gsam.GSAM import GSAM
 
 #ROS2 stuff
 from tf2_ros.buffer import Buffer
@@ -47,6 +55,16 @@ import message_filters
 import rclpy
 import math
 #from tf2_sensor_msgs.tf2_sensor_msgs import do_transform_cloud
+
+# import CATSeg
+from catseg.CATSegTrainer import get_cfg, add_deeplab_config, add_cat_seg_config, setup_logger, comm, Trainer, DetectionCheckpointer
+from detectron2.engine import DefaultTrainer, default_argument_parser, default_setup, launch
+import time
+from catseg.CustomDataset import ArenaDataset
+from torch.utils.data import DataLoader
+from contextlib import ExitStack, contextmanager
+from torch import nn
+import catseg.utils as catseg_utils
 
 def visualize_pc(pc: np.ndarray):
     pcd = o3d.geometry.PointCloud()
@@ -128,12 +146,29 @@ class VLMapBuilderROS(Node):
         os.makedirs(self.map_save_dir, exist_ok=True)
         self.map_save_path = self.map_save_dir + "/" + "vlmaps.h5df"
 
-        # init lseg model
+        # init segmentation model
         if self.map_config.model == "lseg":
             self.seg_model, self.seg_transform, self.crop_size, self.base_size, self.norm_mean, self.norm_std = self._init_lseg()
         elif self.map_config.model == "gsam":
             self.gsam = GSAM(device="cuda" if torch.cuda.is_available() else "cpu")
             self.seg_model, self.seg_transform, self.crop_size, self.base_size, self.norm_mean, self.norm_std = self.gsam._init_gsam()
+        else:
+            args = default_argument_parser()
+            args.config_file = "main_configs/vitb_vlmaps.yaml"
+            args.num_machines = 1
+            args.num_gpus = 1
+            args.machine_rank = 0
+            args.dist_url = None
+            args.eval_only = True
+            args.resume = False
+
+            cfg = catseg_utils.setup(args)
+
+            if args.eval_only:
+                self.catseg = Trainer.build_model(cfg)
+                DetectionCheckpointer(self.catseg, save_dir=cfg.OUTPUT_DIR).resume_or_load(
+                    os.path.join('..', 'catseg', cfg.MODEL.WEIGHTS), resume=args.resume
+                )
 
         # init the map
         (
@@ -252,7 +287,8 @@ class VLMapBuilderROS(Node):
                 z = z / depth_factor
                 x = ((v - cx) * z) / fx
                 y = ((u - cy) * z) / fy
-                feature_points_ls[count] = FeaturedPoint([x, y, z], copy.deepcopy(features_per_pixels[0, :, u, v]), color_img[u, v, :]) # avoid memory re-allocation each loop iter
+                feature_points_ls[count] = FeaturedPoint([x, y, z], features_per_pixels[0, :, u, v], color_img[u, v, :]) # avoid memory re-allocation each loop iter
+                # feature_points_ls[count] = FeaturedPoint([x, y, z], copy.deepcopy(features_per_pixels[0, :, u, v]), color_img[u, v, :]) # avoid memory re-allocation each loop iter
                 count += 1
         feature_points_ls.resize(count, refcheck=False)
         return FeaturedPC(feature_points_ls)
@@ -306,6 +342,66 @@ class VLMapBuilderROS(Node):
         elif self.map_config.model == "gsam":
             boxes, scores, phrases, text_embeddings = self.gsam.groundingdino_model.predict_captions(rgb, text_labels)
             pix_feats = self.gsam.get_sam_feat(rgb, text_embeddings)
+        elif self.map_config.model == "catseg":
+
+            image = [{"image" : torch.tensor(rgb, dtype=torch.float16).permute(2, 0, 1)}]
+            # add the tensor into a batch list of size 1
+            # image[0]['image'] = image[0]['image'].unsqueeze(0)
+            with ExitStack() as stack:
+                stack.enter_context(catseg_utils.inference_context(self.catseg))
+                stack.enter_context(torch.no_grad())
+
+                pix_feats = self.catseg.get_image_embeddings(image)
+                if self.frame_i == 10:
+
+                    import json
+                    import matplotlib.pyplot as plt
+                    self.catseg.sem_seg_head.predictor.define_labels(text_labels)
+                    mask, _ = self.catseg(image)
+
+                    label_index_to_color_dict = {i : plt.cm.get_cmap('tab20')(i) for i in range(len(text_labels))}
+
+                    mask_shape = mask[0]['sem_seg'].shape
+
+                    mask = mask[0]['sem_seg'].detach().cpu().numpy()
+                    mask = np.argmax(mask, axis=0)
+
+                    # rearrange the mask to match the original image shape
+                    if mask_shape != rgb.shape[:2]:
+                        mask = F.interpolate(torch.tensor(mask).unsqueeze(0).unsqueeze(0).float(), size=rgb.shape[:2], mode='nearest').squeeze(0).squeeze(0).numpy()
+                    
+                    # iterate over the mask pixels and assign the color to the corresponding label
+                    mask_color = np.zeros((mask.shape[0], mask.shape[1], 4), dtype=np.float64)
+                    for i in range(mask.shape[0]):
+                        for j in range(mask.shape[1]):
+                            mask_color[i, j] = label_index_to_color_dict[mask[i, j]]
+
+                    plt.imshow(rgb)
+                    plt.imshow(mask_color, alpha=0.5)
+                    plt.legend(handles=[plt.Rectangle((0,0),1,1, color=label_index_to_color_dict[i], label=text_labels[int(i)]) for i in np.unique(mask)])
+
+                    # assert image.shape[:2] == mask.shape == mask_color.shape[:2], (image.shape[:2], mask.shape, mask_color.shape[:2])
+                    plt.savefig("catseg_output.png")
+            # del image
+            # gc.collect()
+            del image
+            gc.collect()
+
+            # # Upsample to (480, 640, clip_dim) using bilinear interpolation
+            # print(f"pix_feats.shape before rearrangement: {pix_feats.shape}")
+            pix_feats = rearrange(pix_feats, "B (H W) C -> B C H W", H=24)
+            # print(f"pix_feats.shape after rearrangement, before interpolation: {pix_feats.shape}")
+            pix_feats = F.interpolate(pix_feats, size=(480, 640), mode='bilinear', align_corners=False)
+            # print(f"pix_feats.shape after interpolation: {pix_feats.shape}")
+        
+        # check if pix_feats lays in the GPU
+        if pix_feats.is_cuda:
+            print("pix_feats is in GPU, moving to CPU")
+            if pix_feats.requires_grad:
+                pix_feats = pix_feats.detach()
+            pix_feats = pix_feats.cpu()
+            torch.cuda.empty_cache()
+        
         time_diff = time.time() - start
         self.get_logger().info(f"seg features extracted in: {time_diff}")
 
@@ -345,7 +441,7 @@ class VLMapBuilderROS(Node):
 
         #### Map update TODO: separate it in another thread
         start = time.time()
-        for (point, feature, rgb) in zip(featured_pc.points_xyz, featured_pc.embeddings, featured_pc.rgb):
+        for (point, feat, rgb) in zip(featured_pc.points_xyz, featured_pc.embeddings, featured_pc.rgb):
             
             row, col, height = base_pos2grid_id_3d(self.gs, self.cs, point[0], point[1], point[2])
             if self._out_of_range(row, col, height, self.gs, self.vh):
@@ -363,10 +459,9 @@ class VLMapBuilderROS(Node):
             sigma_sq = 0.6  #TODO parameterize
             alpha = np.exp(-radial_dist_sq / (2 * sigma_sq))
 
-            #feat = pix_feats[0, :, py, px]
-            feat = feature
+            # feat = pix_feats[0, :, py, px]
 
-            self.occupied_ids[row, col, height] = -1
+            # self.occupied_ids[row, col, height] = -1
             occupied_id = self.occupied_ids[row, col, height]
 
             if occupied_id == -1:
@@ -390,11 +485,12 @@ class VLMapBuilderROS(Node):
         end_loop_time = time.time() - loop_timer
         self.get_logger().info(f"CALLBACK TIME: {end_loop_time}")
         # Save map each X callbacks TODO prameterize and do it in a separate thread
-        if self.frame_i % 5 == 0:
+        if self.frame_i % 10 == 0:
             self.get_logger().info(f"Temporarily saving {self.max_id} features at iter {self.frame_i}...")
             self._save_3d_map(self.grid_feat, self.grid_pos, self.weight, self.grid_rgb, self.occupied_ids, self.mapped_iter_set, self.max_id)
         self.frame_i += 1   # increase counter for map saving purposes
         self.get_logger().info(f"iter {self.frame_i}")
+
         return
 
         #### OLD for memory efficency, we should launch a separate job for mapping registration
@@ -466,6 +562,8 @@ class VLMapBuilderROS(Node):
         vh = int(camera_height / cs)
         if self.map_config.model == "gsam":
             self.clip_feat_dim = 4
+        elif self.map_config.model == "catseg":
+            self.clip_feat_dim = 512
         grid_feat = np.zeros((gs * gs, self.clip_feat_dim), dtype=np.float32)
         grid_pos = np.zeros((gs * gs, 3), dtype=np.int32)
         occupied_ids = -1 * np.ones((gs, gs, vh), dtype=np.int32)
@@ -593,5 +691,5 @@ class VLMapBuilderROS(Node):
         grid_pos = grid_pos[:max_id]
         weight = weight[:max_id]
         grid_rgb = grid_rgb[:max_id]
-        # save_3d_map(self.map_save_path, grid_feat, grid_pos, weight, occupied_ids, list(mapped_iter_set), grid_rgb)
-        save_3d_map(self.map_save_path.split('.h5df')[0] + f"{self.frame_i}.h5df", grid_feat, grid_pos, weight, occupied_ids, list(mapped_iter_set), grid_rgb)
+        save_3d_map(self.map_save_path, grid_feat, grid_pos, weight, occupied_ids, list(mapped_iter_set), grid_rgb)
+        # save_3d_map(self.map_save_path.split('.h5df')[0] + f"{self.frame_i}.h5df", grid_feat, grid_pos, weight, occupied_ids, list(mapped_iter_set), grid_rgb)

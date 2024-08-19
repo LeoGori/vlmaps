@@ -13,6 +13,11 @@ from typing import Any, Dict, List, Set
 
 import torch
 
+import sys
+# filepath = os.path.abspath(__file__)
+sys.path.append(os.path.abspath('../detectron2'))
+# sys.path.append(os.path.abspath('detectron2'))
+
 import detectron2.utils.comm as comm
 from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.config import get_cfg
@@ -70,6 +75,7 @@ import json
 
 #             self._predictions.extend(self.encode_json_sem_seg(pred, input["file_name"]))
 
+sys.path.append(os.path.abspath('../catseg'))
 # MaskFormer
 from cat_seg import (
     DETRPanopticDatasetMapper,

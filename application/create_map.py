@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.append(os.path.abspath('..'))
+
 from pathlib import Path
 import hydra
 from omegaconf import DictConfig

@@ -48,14 +48,17 @@ class CATSegPredictor(nn.Module):
             
         """
         super().__init__()
+
+        self.are_labels_defined = False
         
         import json
         # use class_texts in train_forward, and test_class_texts in test_forward
         # with open(train_class_json, 'r') as f_in:
         #     self.class_texts = json.load(f_in)
-        with open(test_class_json, 'r') as f_in:
-            self.test_class_texts = json.load(f_in)
+        # with open(test_class_json, 'r') as f_in:
+        #     self.test_class_texts = json.load(f_in)
         # assert self.class_texts != None
+        self.class_texts = None
         # if self.test_class_texts == None:
             # self.test_class_texts = self.class_texts
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -74,7 +77,7 @@ class CATSegPredictor(nn.Module):
         else:
             # for OpenAI models
             clip_model, clip_preprocess = clip.load(clip_pretrained, device=device, jit=False, prompt_depth=prompt_depth, prompt_length=prompt_length)
-    
+
         self.prompt_ensemble_type = prompt_ensemble_type        
 
         if self.prompt_ensemble_type == "imagenet_select":
@@ -86,10 +89,12 @@ class CATSegPredictor(nn.Module):
         else:
             raise NotImplementedError
         
+        print("Initialized with prompt templates: ", prompt_templates)
+        
         self.prompt_templates = prompt_templates
 
         # self.text_features = self.class_embeddings(self.class_texts, prompt_templates, clip_model).permute(1, 0, 2).float()
-        self.text_features_test = self.class_embeddings(self.test_class_texts, prompt_templates, clip_model).permute(1, 0, 2).float()
+        # self.text_features_test = self.class_embeddings(self.test_class_texts, prompt_templates, clip_model).permute(1, 0, 2).float()
         
         self.clip_model = clip_model.float()
         self.clip_preprocess = clip_preprocess
@@ -115,6 +120,14 @@ class CATSegPredictor(nn.Module):
         
         self.tokens = None
         self.cache = None
+
+    def define_labels(self, class_texts):
+        self.test_class_texts = class_texts
+        self.class_texts = class_texts
+        self.are_labels_defined = True
+        self.training = False
+
+        self.text_features_test = self.class_embeddings(self.test_class_texts, self.prompt_templates, self.clip_model).permute(1, 0, 2).float()
 
     @classmethod
     def from_config(cls, cfg):#, in_channels, mask_classification):
@@ -150,6 +163,7 @@ class CATSegPredictor(nn.Module):
 
     def forward(self, x, vis_guidance, prompt=None, gt_cls=None):
         vis = [vis_guidance[k] for k in vis_guidance.keys()][::-1]
+        print(f"Training flag is {self.training}")
         text = self.class_texts if self.training else self.test_class_texts
         text = [text[c] for c in gt_cls] if gt_cls is not None else text
         text = self.get_text_embeds(text, self.prompt_templates, self.clip_model, prompt)
