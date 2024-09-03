@@ -14,13 +14,14 @@ from cv_bridge import CvBridge
 import open3d as o3d
 import time
 import copy
+from contextlib import ExitStack
 
 # perform interpolation to get the pixel-aligned CATSeg features
+from torch import nn
 from torch.nn import functional as F
 # perform feature rearrangement of the CATSeg features
 from einops import rearrange
 import gc
-
 
 from vlmaps.utils.lseg_utils import get_lseg_feat
 from vlmaps.utils.mapping_utils import (
@@ -56,15 +57,8 @@ import rclpy
 import math
 #from tf2_sensor_msgs.tf2_sensor_msgs import do_transform_cloud
 
-# import CATSeg
-from catseg.CATSegTrainer import get_cfg, add_deeplab_config, add_cat_seg_config, setup_logger, comm, Trainer, DetectionCheckpointer
-from detectron2.engine import DefaultTrainer, default_argument_parser, default_setup, launch
+from detectron2.checkpoint import DetectionCheckpointer
 import time
-from catseg.CustomDataset import ArenaDataset
-from torch.utils.data import DataLoader
-from contextlib import ExitStack, contextmanager
-from torch import nn
-import catseg.utils as catseg_utils
 
 def visualize_pc(pc: np.ndarray):
     pcd = o3d.geometry.PointCloud()
@@ -102,10 +96,10 @@ class FeaturedPoint:
         self.rgb = rgb
 
 class FeaturedPC:
-    def __init__(self, featured_points) -> None:
+    def __init__(self, featured_points, embedding_size) -> None:
         self.featured_points = featured_points
         self.points_xyz = np.zeros([len(self.featured_points), 3])
-        self.embeddings = np.zeros([len(self.featured_points), 512])  # TODO parameterize embeddings size
+        self.embeddings = np.zeros([len(self.featured_points), embedding_size])  # TODO parameterize embeddings size
         self.rgb = np.zeros([len(self.featured_points), 3])
         i = 0
         for featured_point in self.featured_points:
@@ -133,7 +127,7 @@ class VLMapBuilderROS(Node):
         depth_topic = "/cer/realsense_repeater/depth_image"
         self.img_sub = message_filters.Subscriber(self, Image, img_topic)
         self.depth_sub = message_filters.Subscriber(self, Image, depth_topic)
-        self.tss = message_filters.ApproximateTimeSynchronizer([self.img_sub, self.depth_sub], 1, slop=0.3)        
+        self.tss = message_filters.ApproximateTimeSynchronizer([self.img_sub, self.depth_sub], 200, slop=0.3)        
         self.tss.registerCallback(self.sensors_callback)
         ## First part of create_mobile_base_map for init stuff
         # access config info
@@ -146,15 +140,50 @@ class VLMapBuilderROS(Node):
         os.makedirs(self.map_save_dir, exist_ok=True)
         self.map_save_path = self.map_save_dir + "/" + "vlmaps.h5df"
 
+        # conditional import since the two models are both based on detectron2, which needs the architecture to be registered
+        # registering the same architectures causes conflicts
+        if "catseg" in self.map_config.model:
+            # CATSeg packages
+            import catseg.utils as catseg_utils
+        elif self.map_config.model == "ovseg":
+            # ovseg packages
+            import ovseg.utils as ovseg_utils
+
         # init segmentation model
-        if self.map_config.model == "lseg":
+        if "lseg" in self.map_config.model:
             self.seg_model, self.seg_transform, self.crop_size, self.base_size, self.norm_mean, self.norm_std = self._init_lseg()
         elif self.map_config.model == "gsam":
             self.gsam = GSAM(device="cuda" if torch.cuda.is_available() else "cpu")
             self.seg_model, self.seg_transform, self.crop_size, self.base_size, self.norm_mean, self.norm_std = self.gsam._init_gsam()
-        else:
-            args = default_argument_parser()
-            args.config_file = "main_configs/vitb_vlmaps.yaml"
+        elif "catseg" in self.map_config.model:
+            
+            args = catseg_utils.default_argument_parser()
+            if "vitb" in self.map_config.model:
+                args.config_file = "../catseg/main_configs/vitb_vlmaps.yaml"
+            elif "vitl" in self.map_config.model:
+                args.config_file = "../catseg/main_configs/vitl_vlmaps.yaml"
+            args.num_machines = 1
+            args.num_gpus = 1
+            args.machine_rank = 0
+            args.dist_url = None
+            args.eval_only = True
+            args.resume = False
+            args.opts = []
+
+            cfg = catseg_utils.setup(args)
+
+            if args.eval_only:
+                self.catseg = catseg_utils.Trainer.build_model(cfg)
+                DetectionCheckpointer(self.catseg, save_dir=cfg.OUTPUT_DIR).resume_or_load(
+                    os.path.join('..', 'catseg', cfg.MODEL.WEIGHTS), resume=args.resume
+                )
+        elif self.map_config.model == "ovseg":
+            args = ovseg_utils.get_parser()
+            # args.opts = ["MODEL.WEIGHTS", "ovseg_swinbase_vitL14_ft_mpt.pth"]
+            args.opts = ["MODEL.WEIGHTS", "ovseg_R101c_vitB16_ft_mpt.pth.pt"]
+            # args.config_file = "../ovseg/configs/ovseg_swinB_vitL_bs32_120k.yaml"
+            # args.config_file = "../ovseg/configs/ovseg_swinB_vitL_demo.yaml"
+            args.config_file = "../ovseg/configs/ovseg_R101c_vitB_bs32_120k.yaml"
             args.num_machines = 1
             args.num_gpus = 1
             args.machine_rank = 0
@@ -162,13 +191,14 @@ class VLMapBuilderROS(Node):
             args.eval_only = True
             args.resume = False
 
-            cfg = catseg_utils.setup(args)
+            cfg = ovseg_utils.setup_cfg(args)
 
             if args.eval_only:
-                self.catseg = Trainer.build_model(cfg)
-                DetectionCheckpointer(self.catseg, save_dir=cfg.OUTPUT_DIR).resume_or_load(
-                    os.path.join('..', 'catseg', cfg.MODEL.WEIGHTS), resume=args.resume
+                self.ovseg = ovseg_utils.Trainer.build_model(cfg)
+                DetectionCheckpointer(self.ovseg, save_dir=cfg.OUTPUT_DIR).resume_or_load(
+                    os.path.join('..', 'ovseg', cfg.MODEL.WEIGHTS), resume=args.resume
                 )
+
 
         # init the map
         (
@@ -262,7 +292,37 @@ class VLMapBuilderROS(Node):
         time_diff = time.time() - start
         self.get_logger().info(f"Time for executing from_depth_to_pc: {time_diff}")
         return points
+    
+    # def save_image_to_check_correctness(self, img, name):
+    #     import json
+    #     import matplotlib.pyplot as plt
+    #     self.catseg.sem_seg_head.predictor.define_labels(text_labels)
+    #     mask, _ = self.catseg(image)
 
+    #     label_index_to_color_dict = {i : plt.cm.get_cmap('tab20')(i) for i in range(len(text_labels))}
+
+    #     mask_shape = mask[0]['sem_seg'].shape
+
+    #     mask = mask[0]['sem_seg'].detach().cpu().numpy()
+    #     mask = np.argmax(mask, axis=0)
+
+    #     # rearrange the mask to match the original image shape
+    #     if mask_shape != rgb.shape[:2]:
+    #         mask = F.interpolate(torch.tensor(mask).unsqueeze(0).unsqueeze(0).float(), size=rgb.shape[:2], mode='nearest').squeeze(0).squeeze(0).numpy()
+        
+    #     # iterate over the mask pixels and assign the color to the corresponding label
+    #     mask_color = np.zeros((mask.shape[0], mask.shape[1], 4), dtype=np.float64)
+    #     for i in range(mask.shape[0]):
+    #         for j in range(mask.shape[1]):
+    #             mask_color[i, j] = label_index_to_color_dict[mask[i, j]]
+
+    #     plt.imshow(rgb)
+    #     plt.imshow(mask_color, alpha=0.5)
+    #     plt.legend(handles=[plt.Rectangle((0,0),1,1, color=label_index_to_color_dict[i], label=text_labels[int(i)]) for i in np.unique(mask)])
+
+    #     # assert image.shape[:2] == mask.shape == mask_color.shape[:2], (image.shape[:2], mask.shape, mask_color.shape[:2])
+    #     plt.savefig(f"{name}.png")
+    
     def project_depth_features_pc(self, depth, features_per_pixels, color_img, depth_factor=1., downsample_factor=10):
         fx = self.focal_lenght_x
         fy = self.focal_lenght_y
@@ -291,7 +351,7 @@ class VLMapBuilderROS(Node):
                 # feature_points_ls[count] = FeaturedPoint([x, y, z], copy.deepcopy(features_per_pixels[0, :, u, v]), color_img[u, v, :]) # avoid memory re-allocation each loop iter
                 count += 1
         feature_points_ls.resize(count, refcheck=False)
-        return FeaturedPC(feature_points_ls)
+        return FeaturedPC(feature_points_ls, self.clip_feat_dim)
 
     def sensors_callback(self, img_msg, depth_msg):
         """
@@ -335,14 +395,25 @@ class VLMapBuilderROS(Node):
 
         text_labels = ["other", "screen", "table", "closet", "chair", "shelf", "door", "wall", "ceiling", "floor", "human"]
 
-        if self.map_config.model == "lseg":
+        if "catseg" in self.map_config.model:
+            # CATSeg packages
+            import catseg.utils as catseg_utils
+        elif self.map_config.model == "ovseg":
+            # ovseg packages
+            import ovseg.utils as ovseg_utils
+
+        if "lseg" in self.map_config.model:
             pix_feats = get_lseg_feat(
                 self.seg_model, rgb, text_labels, self.seg_transform, self.device, self.crop_size, self.base_size, self.norm_mean, self.norm_std, vis=False
             )
         elif self.map_config.model == "gsam":
             boxes, scores, phrases, text_embeddings = self.gsam.groundingdino_model.predict_captions(rgb, text_labels)
             pix_feats = self.gsam.get_sam_feat(rgb, text_embeddings)
-        elif self.map_config.model == "catseg":
+
+        # conditional import since the two models are both based on detectron2, which needs the architecture to be registered
+        # registering the same architectures causes conflicts
+                
+        elif "catseg" in self.map_config.model:
 
             image = [{"image" : torch.tensor(rgb, dtype=torch.float16).permute(2, 0, 1)}]
             # add the tensor into a batch list of size 1
@@ -352,36 +423,36 @@ class VLMapBuilderROS(Node):
                 stack.enter_context(torch.no_grad())
 
                 pix_feats = self.catseg.get_image_embeddings(image)
-                if self.frame_i == 10:
+                # if self.frame_i == 10:
 
-                    import json
-                    import matplotlib.pyplot as plt
-                    self.catseg.sem_seg_head.predictor.define_labels(text_labels)
-                    mask, _ = self.catseg(image)
+                #     import json
+                #     import matplotlib.pyplot as plt
+                #     self.catseg.sem_seg_head.predictor.define_labels(text_labels)
+                #     mask, _ = self.catseg(image)
 
-                    label_index_to_color_dict = {i : plt.cm.get_cmap('tab20')(i) for i in range(len(text_labels))}
+                #     label_index_to_color_dict = {i : plt.cm.get_cmap('tab20')(i) for i in range(len(text_labels))}
 
-                    mask_shape = mask[0]['sem_seg'].shape
+                #     mask_shape = mask[0]['sem_seg'].shape
 
-                    mask = mask[0]['sem_seg'].detach().cpu().numpy()
-                    mask = np.argmax(mask, axis=0)
+                #     mask = mask[0]['sem_seg'].detach().cpu().numpy()
+                #     mask = np.argmax(mask, axis=0)
 
-                    # rearrange the mask to match the original image shape
-                    if mask_shape != rgb.shape[:2]:
-                        mask = F.interpolate(torch.tensor(mask).unsqueeze(0).unsqueeze(0).float(), size=rgb.shape[:2], mode='nearest').squeeze(0).squeeze(0).numpy()
+                #     # rearrange the mask to match the original image shape
+                #     if mask_shape != rgb.shape[:2]:
+                #         mask = F.interpolate(torch.tensor(mask).unsqueeze(0).unsqueeze(0).float(), size=rgb.shape[:2], mode='nearest').squeeze(0).squeeze(0).numpy()
                     
-                    # iterate over the mask pixels and assign the color to the corresponding label
-                    mask_color = np.zeros((mask.shape[0], mask.shape[1], 4), dtype=np.float64)
-                    for i in range(mask.shape[0]):
-                        for j in range(mask.shape[1]):
-                            mask_color[i, j] = label_index_to_color_dict[mask[i, j]]
+                #     # iterate over the mask pixels and assign the color to the corresponding label
+                #     mask_color = np.zeros((mask.shape[0], mask.shape[1], 4), dtype=np.float64)
+                #     for i in range(mask.shape[0]):
+                #         for j in range(mask.shape[1]):
+                #             mask_color[i, j] = label_index_to_color_dict[mask[i, j]]
 
-                    plt.imshow(rgb)
-                    plt.imshow(mask_color, alpha=0.5)
-                    plt.legend(handles=[plt.Rectangle((0,0),1,1, color=label_index_to_color_dict[i], label=text_labels[int(i)]) for i in np.unique(mask)])
+                #     plt.imshow(rgb)
+                #     plt.imshow(mask_color, alpha=0.5)
+                #     plt.legend(handles=[plt.Rectangle((0,0),1,1, color=label_index_to_color_dict[i], label=text_labels[int(i)]) for i in np.unique(mask)])
 
-                    # assert image.shape[:2] == mask.shape == mask_color.shape[:2], (image.shape[:2], mask.shape, mask_color.shape[:2])
-                    plt.savefig("catseg_output.png")
+                #     # assert image.shape[:2] == mask.shape == mask_color.shape[:2], (image.shape[:2], mask.shape, mask_color.shape[:2])
+                #     plt.savefig("catseg_output.png")
             # del image
             # gc.collect()
             del image
@@ -393,9 +464,21 @@ class VLMapBuilderROS(Node):
             # print(f"pix_feats.shape after rearrangement, before interpolation: {pix_feats.shape}")
             pix_feats = F.interpolate(pix_feats, size=(480, 640), mode='bilinear', align_corners=False)
             # print(f"pix_feats.shape after interpolation: {pix_feats.shape}")
+        elif self.map_config.model == "ovseg":
+            image = [{"image" : torch.tensor(rgb, dtype=torch.float16).permute(2, 0, 1)}]
+            # add the tensor into a batch list of size 1
+            # image[0]['image'] = image[0]['image'].unsqueeze(0)
+            with ExitStack() as stack:
+                if isinstance(self.ovseg, nn.Module):
+                    stack.enter_context(ovseg_utils.inference_context(self.ovseg))
+                stack.enter_context(torch.no_grad())
+
+            pix_feats = self.ovseg.get_image_embeddings(image)
+
+            pix_feats = rearrange(pix_feats, "B H W C -> B C H W")
         
         # check if pix_feats lays in the GPU
-        if pix_feats.is_cuda:
+        if torch.is_tensor(pix_feats) and pix_feats.is_cuda:
             print("pix_feats is in GPU, moving to CPU")
             if pix_feats.requires_grad:
                 pix_feats = pix_feats.detach()
@@ -420,6 +503,8 @@ class VLMapBuilderROS(Node):
         #cv2.waitKey(0)
 
         #### Formatted PC with aligned features to pixel
+
+        print(f"pix feats shape: {pix_feats.shape}")
         start = time.time()
         featured_pc = self.project_depth_features_pc(depth, pix_feats, rgb, downsample_factor=20)
         time_diff = time.time() - start
@@ -562,7 +647,14 @@ class VLMapBuilderROS(Node):
         vh = int(camera_height / cs)
         if self.map_config.model == "gsam":
             self.clip_feat_dim = 4
-        elif self.map_config.model == "catseg":
+        elif "catseg" in self.map_config.model:
+            if "vitl" in self.map_config.model:
+                self.clip_feat_dim = 768
+            elif "vitb" in self.map_config.model:
+                self.clip_feat_dim = 512
+        elif self.map_config.model == "ovseg":
+            self.clip_feat_dim = 512
+        elif "lseg" in self.map_config.model:
             self.clip_feat_dim = 512
         grid_feat = np.zeros((gs * gs, self.clip_feat_dim), dtype=np.float32)
         grid_pos = np.zeros((gs * gs, 3), dtype=np.int32)
@@ -600,7 +692,13 @@ class VLMapBuilderROS(Node):
         lseg_model = LSegEncNet("", arch_option=0, block_depth=0, activation="lrelu", crop_size=crop_size)
         model_state_dict = lseg_model.state_dict()
         checkpoint_dir = Path(__file__).resolve().parents[1] / "lseg" / "checkpoints"
-        checkpoint_path = checkpoint_dir / "demo_e200.ckpt"
+        if "lseg" in self.map_config.model:
+            # demo checkpoint from lseg repo
+            if "demo" in self.map_config.model:
+                checkpoint_path = checkpoint_dir / "demo_e200.ckpt"
+            # official checkpoint from lseg repo
+            else:
+                checkpoint_path = checkpoint_dir / "fss_l16.ckpt"
         os.makedirs(checkpoint_dir, exist_ok=True)
         print(f"checkpoint path is : {checkpoint_path}")
 

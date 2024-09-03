@@ -33,12 +33,29 @@ def main(config: DictConfig) -> None:
     vlmap = VLMap(config.map_config, data_dir=data_dirs[config.scene_id])
     #vlmap.load_map(data_dirs[config.scene_id])
     # vlmap.load_map(config.savepath, "vlmaps35.h5df")
-    vlmap.load_map("output/vlmap", "vlmaps.h5df")
+    if config.map_config.model == "ovseg":
+        vlmap.load_map("output/vlmap-ovseg", "vlmaps.h5df")
+    elif config.map_config.model == "catseg-vitb":
+        vlmap.load_map("output/vlmap-catseg-vitb", "vlmaps.h5df")
+    elif config.map_config.model == "catseg-vitl":
+        vlmap.load_map("output/vlmap-catseg-vitl", "vlmaps.h5df")
+    elif config.map_config.model == "lseg":
+        vlmap.load_map("output/vlmap-lseg", "vlmaps.h5df")
+    elif config.map_config.model == "lseg-demo":
+        vlmap.load_map("output/vlmap-lseg-demo", "vlmaps.h5df")
+    else:
+        raise ValueError("Invalid model name")
     visualize_rgb_map_3d(vlmap.grid_pos, vlmap.grid_rgb, voxel_size=.001)
     cat = input("What is your interested category in this scene?")
     # cat = "chair"
 
-    vlmap._init_clip()
+    
+    if config.map_config.model in ['ovseg-vitb', 'catseg-vitb']:
+        vlmap._init_clip(clip_version="ViT-B/16")
+    elif config.map_config.model in ['ovseg-vitl', 'catseg-vitl']:
+        vlmap._init_clip(clip_version="ViT-L/14")
+    else: # uses vitb-32 by default
+        vlmap._init_clip()
     print("considering categories: ")
     print(mp3dcat[1:-1])
     if config.init_categories:

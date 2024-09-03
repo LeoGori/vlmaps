@@ -212,7 +212,8 @@ def get_lseg_score(
     """
     landmarks_other = landmarks
     if add_other and landmarks_other[-1] != "other":
-        landmarks_other = landmarks + ["other"]
+        # landmarks_other = landmarks + ["wall", "other"]
+        landmarks_other = landmarks + ["floor", "table", "person", "robot", "other"]
 
     if use_multiple_templates:
         mul_tmp = multiple_templates.copy()

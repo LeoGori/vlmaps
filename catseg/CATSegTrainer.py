@@ -78,11 +78,11 @@ import json
 sys.path.append(os.path.abspath('../catseg'))
 # MaskFormer
 from cat_seg import (
-    DETRPanopticDatasetMapper,
-    MaskFormerPanopticDatasetMapper,
-    MaskFormerSemanticDatasetMapper,
+    # DETRPanopticDatasetMapper,
+    # MaskFormerPanopticDatasetMapper,
+    # MaskFormerSemanticDatasetMapper,
     SemanticSegmentorWithTTA,
-    add_cat_seg_config,
+    # add_cat_seg_config,
 )
 
 

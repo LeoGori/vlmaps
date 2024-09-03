@@ -51,4 +51,4 @@ SOLVER:
 TEST:
   EVAL_PERIOD: 5000  
 DATASETS:
-  TEST: !!python/tuple ['/home/user1/VLMaps/vlmaps/data/bag_arena_simple/sample0/rgb']
+  TEST: !!python/tuple ['/home/r1-user/Projects/VLMaps/vlmaps/data/bag_arena_simple/sample0/rgb']
