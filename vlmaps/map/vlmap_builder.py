@@ -42,7 +42,8 @@ import os
 
 
 # Add the directory containing the gsam folder to the Python path
-sys.path.append(os.path.abspath('/home/user1/VLMaps/vlmaps'))
+# sys.path.append(os.path.abspath('/home/user1/VLMaps/vlmaps'))
+sys.path.append(os.path.abspath('../..'))
 # from gsam.GSAM import GSAM
 
 #ROS2 stuff
@@ -59,6 +60,8 @@ import math
 
 from detectron2.checkpoint import DetectionCheckpointer
 import time
+
+# sys.path.append(os.path.abspath(".."))
 
 def visualize_pc(pc: np.ndarray):
     pcd = o3d.geometry.PointCloud()
@@ -148,7 +151,23 @@ class VLMapBuilderROS(Node):
         elif self.map_config.model == "ovseg":
             # ovseg packages
             import ovseg.utils as ovseg_utils
+        elif self.map_config.model == "odise":
+            # ODISE
+            import torch
+            from PIL import Image
+            import numpy as np
 
+            from detectron2.config import instantiate
+            
+            from detectron2.utils.env import seed_all_rng
+
+            import sys
+            import os
+
+            from odise.odise import model_zoo
+            from odise.odise.checkpoint import ODISECheckpointer
+            from odise.odise.config import instantiate_odise
+            
         # init segmentation model
         if "lseg" in self.map_config.model:
             self.seg_model, self.seg_transform, self.crop_size, self.base_size, self.norm_mean, self.norm_std = self._init_lseg()
@@ -198,6 +217,22 @@ class VLMapBuilderROS(Node):
                 DetectionCheckpointer(self.ovseg, save_dir=cfg.OUTPUT_DIR).resume_or_load(
                     os.path.join('..', 'ovseg', cfg.MODEL.WEIGHTS), resume=args.resume
                 )
+        elif self.map_config.model == "odise":
+            cfg = model_zoo.get_config("Panoptic/odise_caption_coco_50e.py", trained=True)
+
+            cfg.model.overlap_threshold = 0
+            seed_all_rng(42)
+
+            dataset_cfg = cfg.dataloader.test
+            # wrapper_cfg = cfg.dataloader.wrapper
+
+            aug = instantiate(dataset_cfg.mapper).augmentations
+
+            self.odise = instantiate_odise(cfg.model)
+            self.odise.set_augmentation(aug)
+            self.odise.to(cfg.train.device)
+            ODISECheckpointer(self.odise).load(cfg.train.init_checkpoint)
+            "finished loading model"
 
 
         # init the map
@@ -476,6 +511,15 @@ class VLMapBuilderROS(Node):
             pix_feats = self.ovseg.get_image_embeddings(image)
 
             pix_feats = rearrange(pix_feats, "B H W C -> B C H W")
+        elif self.map_config.model == "odise":
+            from contextlib import ExitStack
+            from detectron2.evaluation import inference_context
+            with ExitStack() as stack:
+
+                stack.enter_context(inference_context(self.odise))
+                stack.enter_context(torch.no_grad())
+
+                pix_feats = self.odise.get_image_embeddings(np.array(rgb))
         
         # check if pix_feats lays in the GPU
         if torch.is_tensor(pix_feats) and pix_feats.is_cuda:
