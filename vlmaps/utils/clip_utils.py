@@ -243,5 +243,74 @@ def get_lseg_score(
     return scores_list
 
 
+def get_odise_score(
+    odise_model,
+    landmarks: list,
+    odise_map: np.array,
+    batch_size: int = 32  # Set an appropriate batch size based on your GPU memory
+):
+    """
+    Inputs:
+        landmarks: a list of strings that describe the landmarks
+        odise_map: a numpy array with shape (N, clip_dim), where clip_dim is 1024, where the first 768 values are CLIP embeddings, while the remaining 256 values are Mask2Former embeddings
+        batch_size: the size of each batch to process to avoid memory overflow
+    Return:
+        scores_list: (h, w, class_num) storing the score for each location for each class
+    """
+    landmarks_other = landmarks
+    if landmarks_other[-1] != "other":
+        landmarks_other = landmarks + ["others"]
+        # landmarks_other = landmarks + ["floor", "table", "person", "robot", "other"]
+    # Convert landmarks for model input
+    formatted_landmarks = [[l] for l in landmarks_other]
+    
+    # Prepare to aggregate the results across batches
+    all_scores = []
+
+    # Split odise_map into batches and process each
+    for start_idx in range(0, odise_map.shape[0], batch_size):
+        end_idx = start_idx + batch_size
+        batch_feats = odise_map[start_idx:end_idx]  # Slice the current batch
+        print(f"Processing batch {start_idx}-{end_idx}, shape: {batch_feats.shape}")
+
+        # Convert to torch tensor and add batch dimension
+        map_feats = torch.tensor(batch_feats).unsqueeze(0).cuda()
+
+        # Get segmentation scores for the current batch
+        with torch.no_grad():  # Disable gradients to save memory
+            batch_scores = odise_model.get_segmentation(formatted_landmarks, map_feats)
+
+        # Append to list and move data back to CPU
+        all_scores.append(batch_scores.squeeze(0).cpu().numpy())
+
+    # Concatenate the batch results along the first dimension
+    scores_list = np.concatenate(all_scores, axis=0)
+    
+    return scores_list
+
+
+# def get_odise_score(
+#     odise_model,
+#     landmarks: list,
+#     odise_map: np.array
+# ):
+#     """
+#     Inputs:
+#         landmarks: a list of strings that describe the landmarks
+#         odise_map: a numpy array with shape (N, clip_dim), where clip_dim is 1024, where the first 768 values are CLIP embeddings, while the remaining 256 values are Mask2Former embeddings
+#         avg_mode: this is for multiple template. 0 for averaging features, 1 for averaging scores
+#     Return:
+#         scores_list: (h, w, class_num) storing the score for each location for each class
+#     """
+#     import torch
+
+#     print(f"map feats shape before reshaping {odise_map.shape}")
+
+#     map_feats = torch.tensor(odise_map).unsqueeze(0).cuda()
+
+#     print(f"map feats shape after reshaping {map_feats.shape}")
+
+#     return odise_model.get_segmentation([[l] for l in landmarks], map_feats).squeeze(0).cpu().numpy()
+
 if __name__ == "__main__":
     main()

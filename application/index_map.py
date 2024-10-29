@@ -43,6 +43,8 @@ def main(config: DictConfig) -> None:
         vlmap.load_map("output/vlmap-lseg", "vlmaps.h5df")
     elif config.map_config.model == "lseg-demo":
         vlmap.load_map("output/vlmap-lseg-demo", "vlmaps.h5df")
+    elif config.map_config.model == "odise":
+        vlmap.load_map("output/vlmap-odise", "vlmaps.h5df")
     else:
         raise ValueError("Invalid model name")
     visualize_rgb_map_3d(vlmap.grid_pos, vlmap.grid_rgb, voxel_size=.001)
@@ -54,15 +56,17 @@ def main(config: DictConfig) -> None:
         vlmap._init_clip(clip_version="ViT-B/16")
     elif config.map_config.model in ['ovseg-vitl', 'catseg-vitl']:
         vlmap._init_clip(clip_version="ViT-L/14")
+    elif config.map_config.model == 'odise':
+        vlmap._init_odise()
     else: # uses vitb-32 by default
         vlmap._init_clip()
     print("considering categories: ")
     print(mp3dcat[1:-1])
     if config.init_categories:
-        vlmap.init_categories(mp3dcat[1:-1])
-        mask = vlmap.index_map(cat, with_init_cat=False)
+        vlmap.init_categories(mp3dcat[1:-1], model_name=config.map_config.model)
+        mask = vlmap.index_map(cat, with_init_cat=False, model_name=config.map_config.model)
     else:
-        mask = vlmap.index_map(cat, with_init_cat=False)
+        mask = vlmap.index_map(cat, with_init_cat=False, model_name=config.map_config.model)
 
     if config.index_2d:
         mask_2d = pool_3d_label_to_2d(mask, vlmap.grid_pos, config.params.gs)

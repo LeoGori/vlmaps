@@ -37,14 +37,15 @@ from vlmaps.utils.mapping_utils import (
 )
 from vlmaps.lseg.modules.models.lseg_net import LSegEncNet
 
-import sys
-import os
+import torch
+# from PIL import Image as IM
+import numpy as np
 
 
-# Add the directory containing the gsam folder to the Python path
-# sys.path.append(os.path.abspath('/home/user1/VLMaps/vlmaps'))
-sys.path.append(os.path.abspath('../..'))
-# from gsam.GSAM import GSAM
+# # Add the directory containing the gsam folder to the Python path
+# # sys.path.append(os.path.abspath('/home/user1/VLMaps/vlmaps'))
+# sys.path.append(os.path.abspath('../..'))
+# # from gsam.GSAM import GSAM
 
 #ROS2 stuff
 from tf2_ros.buffer import Buffer
@@ -153,20 +154,16 @@ class VLMapBuilderROS(Node):
             import ovseg.utils as ovseg_utils
         elif self.map_config.model == "odise":
             # ODISE
-            import torch
-            from PIL import Image
-            import numpy as np
+            import sys
 
             from detectron2.config import instantiate
-            
             from detectron2.utils.env import seed_all_rng
 
-            import sys
-            import os
+            sys.path.append(os.path.abspath('../odise'))
 
-            from odise.odise import model_zoo
-            from odise.odise.checkpoint import ODISECheckpointer
-            from odise.odise.config import instantiate_odise
+            from odise import model_zoo
+            from odise.checkpoint import ODISECheckpointer
+            from odise.config import instantiate_odise
             
         # init segmentation model
         if "lseg" in self.map_config.model:
@@ -175,6 +172,8 @@ class VLMapBuilderROS(Node):
             self.gsam = GSAM(device="cuda" if torch.cuda.is_available() else "cpu")
             self.seg_model, self.seg_transform, self.crop_size, self.base_size, self.norm_mean, self.norm_std = self.gsam._init_gsam()
         elif "catseg" in self.map_config.model:
+            # CATSeg packages
+            import catseg.utils as catseg_utils
             
             args = catseg_utils.default_argument_parser()
             if "vitb" in self.map_config.model:
@@ -197,6 +196,8 @@ class VLMapBuilderROS(Node):
                     os.path.join('..', 'catseg', cfg.MODEL.WEIGHTS), resume=args.resume
                 )
         elif self.map_config.model == "ovseg":
+            # ovseg packages
+            import ovseg.utils as ovseg_utils
             args = ovseg_utils.get_parser()
             # args.opts = ["MODEL.WEIGHTS", "ovseg_swinbase_vitL14_ft_mpt.pth"]
             args.opts = ["MODEL.WEIGHTS", "ovseg_R101c_vitB16_ft_mpt.pth.pt"]
@@ -430,13 +431,6 @@ class VLMapBuilderROS(Node):
 
         text_labels = ["other", "screen", "table", "closet", "chair", "shelf", "door", "wall", "ceiling", "floor", "human"]
 
-        if "catseg" in self.map_config.model:
-            # CATSeg packages
-            import catseg.utils as catseg_utils
-        elif self.map_config.model == "ovseg":
-            # ovseg packages
-            import ovseg.utils as ovseg_utils
-
         if "lseg" in self.map_config.model:
             pix_feats = get_lseg_feat(
                 self.seg_model, rgb, text_labels, self.seg_transform, self.device, self.crop_size, self.base_size, self.norm_mean, self.norm_std, vis=False
@@ -520,6 +514,9 @@ class VLMapBuilderROS(Node):
                 stack.enter_context(torch.no_grad())
 
                 pix_feats = self.odise.get_image_embeddings(np.array(rgb))
+
+                pix_feats = pix_feats.permute(2, 0, 1)
+                pix_feats = pix_feats.unsqueeze(0)
         
         # check if pix_feats lays in the GPU
         if torch.is_tensor(pix_feats) and pix_feats.is_cuda:
@@ -547,9 +544,12 @@ class VLMapBuilderROS(Node):
         #cv2.waitKey(0)
 
         #### Formatted PC with aligned features to pixel
-
+        print("#" * 100)
         print(f"pix feats shape: {pix_feats.shape}")
         start = time.time()
+        print("#" * 100)
+        
+        # expects pix feats with shape (B, C, H, W), where B = 1, C is the value of self.feat_dim, H and W are respectively height and width of the image (in this case 480x640)
         featured_pc = self.project_depth_features_pc(depth, pix_feats, rgb, downsample_factor=20)
         time_diff = time.time() - start
         self.get_logger().info(f"Time for executing project_depth_features_pc: {time_diff}")
@@ -700,6 +700,8 @@ class VLMapBuilderROS(Node):
             self.clip_feat_dim = 512
         elif "lseg" in self.map_config.model:
             self.clip_feat_dim = 512
+        elif "odise" in self.map_config.model:
+            self.clip_feat_dim = 1024
         grid_feat = np.zeros((gs * gs, self.clip_feat_dim), dtype=np.float32)
         grid_pos = np.zeros((gs * gs, 3), dtype=np.int32)
         occupied_ids = -1 * np.ones((gs, gs, vh), dtype=np.int32)

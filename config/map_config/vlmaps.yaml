@@ -34,4 +34,4 @@ obstacle_names:
 categories: "mp3d" # "mp3d", "ai2thor"
 savepath: "output/vlmap"
 development_mode: True
-model: 'catseg-vitb'
+model: 'odise'

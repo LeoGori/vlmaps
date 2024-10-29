@@ -715,6 +715,9 @@ class CaptionODISE(MaskFormer):
 
         self.projected_other_embedding = self.word_head.text_proj(self.other_embedding)
 
+        logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+        self.maskformer_logit_scale = torch.clamp(logit_scale.exp(), max=100)
+
     def prepare_targets(self, targets, images):
         h_pad, w_pad = images.tensor.shape[-2:]
         new_targets = []
@@ -951,6 +954,8 @@ class CaptionODISE(MaskFormer):
         return featured_image
     
     def get_segmentation(self, category_list, featured_voxel):
+
+        print(category_list)
 
         word_list = prompt_labels(labels=category_list, prompt="photo")
 

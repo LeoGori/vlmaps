@@ -27,7 +27,7 @@ from vlmaps.map.vlmap_builder import VLMapBuilderROS
 from vlmaps.utils.mapping_utils import load_3d_map
 from vlmaps.map.map import Map
 from vlmaps.utils.index_utils import find_similar_category_id, get_dynamic_obstacles_map_3d, get_segment_islands_pos
-from vlmaps.utils.clip_utils import get_lseg_score
+from vlmaps.utils.clip_utils import get_lseg_score, get_odise_score
 import rclpy
 
 class VLMap(Map):
@@ -136,19 +136,57 @@ class VLMap(Map):
         self.clip_model, self.preprocess = clip.load(self.clip_version)  # clip.available_models()
         self.clip_model.to(self.device).eval()
 
-    def init_categories(self, categories: List[str]) -> np.ndarray:
+    def _init_odise(self):
+        # ODISE
+        import sys
+
+        from detectron2.config import instantiate
+        from detectron2.utils.env import seed_all_rng
+
+        print(os.path.abspath('odise'))
+        sys.path.append(os.path.abspath('odise'))
+
+        from odise import model_zoo
+        from odise.checkpoint import ODISECheckpointer
+        from odise.config import instantiate_odise
+
+        cfg = model_zoo.get_config("Panoptic/odise_caption_coco_50e.py", trained=True)
+
+        cfg.model.overlap_threshold = 0
+        seed_all_rng(42)
+
+        dataset_cfg = cfg.dataloader.test
+        # wrapper_cfg = cfg.dataloader.wrapper
+
+        aug = instantiate(dataset_cfg.mapper).augmentations
+
+        self.odise_feat_dim = 1024 # 768 from CLIP concatenated with 256 of projected Mask2Former
+
+        self.odise_model = instantiate_odise(cfg.model)
+        self.odise_model.set_augmentation(aug)
+        self.odise_model.to(cfg.train.device)
+        ODISECheckpointer(self.odise_model).load(cfg.train.init_checkpoint)
+        "finished loading model"
+
+        
+
+    def init_categories(self, categories: List[str], model_name='lseg') -> np.ndarray:
         self.categories = categories
-        self.scores_mat = get_lseg_score(
-            self.clip_model,
-            self.categories,
-            self.grid_feat,
-            self.clip_feat_dim,
-            use_multiple_templates=True,
-            add_other=True,
-        )  # score for name and other
+        if model_name == "odise":
+            # returns max_ids of the list containing categories
+            self.scores_mat = get_odise_score(self.odise_model, self.categories, self.grid_feat)
+        else:
+            self.scores_mat = get_lseg_score(
+                self.clip_model,
+                self.categories,
+                self.grid_feat,
+                self.clip_feat_dim,
+                use_multiple_templates=True,
+                add_other=True,
+            )  # score for name and other
         return self.scores_mat
 
-    def index_map(self, language_desc: str, with_init_cat: bool = True):
+    def index_map(self, language_desc: str, with_init_cat: bool = True, model_name='lseg'):
         if with_init_cat and self.scores_mat is not None and self.categories is not None:
             cat_id = find_similar_category_id(language_desc, self.categories)
             scores_mat = self.scores_mat
@@ -157,17 +195,23 @@ class VLMap(Map):
                 raise Exception(
                     "Categories are not preloaded. Call init_categories(categories: List[str]) to initialize categories."
                 )
-            scores_mat = get_lseg_score(
-                self.clip_model,
-                [language_desc],
-                self.grid_feat,
-                self.clip_feat_dim,
-                use_multiple_templates=True,
-                add_other=True,
-            )  # score for name and other
-            cat_id = 0
+            
+            if model_name == "odise":
+                # returns max_ids of the list containing categories
+                max_ids = get_odise_score(self.odise_model, [language_desc], self.grid_feat)
+            else:
+                scores_mat = get_lseg_score(
+                    self.clip_model,
+                    [language_desc],
+                    self.grid_feat,
+                    self.clip_feat_dim,
+                    use_multiple_templates=True,
+                    add_other=True,
+                )  # score for name and other
+        if model_name != "odise":
+            max_ids = np.argmax(scores_mat, axis=1)
 
-        max_ids = np.argmax(scores_mat, axis=1)
+        cat_id = 0
         mask = max_ids == cat_id
         return mask
 
